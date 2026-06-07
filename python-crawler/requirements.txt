@@ -1,0 +1,6 @@
+APScheduler
+beautifulsoup4
+feedparser
+psycopg2-binary
+python-dotenv
+requests
