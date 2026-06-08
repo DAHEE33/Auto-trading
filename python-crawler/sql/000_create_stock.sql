@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS stock (
+    id BIGSERIAL PRIMARY KEY,
+    ticker VARCHAR(20) NOT NULL UNIQUE,
+    name VARCHAR(200),
+    market VARCHAR(20),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_ticker
+    ON stock (ticker);

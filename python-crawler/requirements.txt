@@ -1,6 +1,8 @@
 APScheduler
 beautifulsoup4
+finance-datareader
 feedparser
+pandas
 psycopg2-binary
 python-dotenv
 requests
