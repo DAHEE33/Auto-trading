@@ -60,6 +60,11 @@ def collect_articles(settings: Settings, source: RssSource) -> list[NewsArticle]
     articles: list[NewsArticle] = []
     robots_checker = RobotsChecker()
     last_request_at = 0.0
+    feed_entries = len(feed.entries)
+    robots_blocked = 0
+    fetch_success = 0
+    fallback_used = 0
+    skipped_no_summary = 0
 
     for entry in feed.entries:
         url = getattr(entry, "link", "").strip()
@@ -68,6 +73,7 @@ def collect_articles(settings: Settings, source: RssSource) -> list[NewsArticle]
         if not url or not title:
             continue
         if not robots_checker.can_fetch(url):
+            robots_blocked += 1
             continue
 
         try:
@@ -79,13 +85,17 @@ def collect_articles(settings: Settings, source: RssSource) -> list[NewsArticle]
             response = requests.get(url, timeout=settings.crawl_timeout_seconds)
             response.raise_for_status()
             summary = summarize_html(response.text)
+            fetch_success += 1
         except Exception as exc:
             logger.warning("본문 수집 실패 source=%s url=%s error=%s", source.name, url, exc)
             summary = ""
 
         if not summary:
             summary = getattr(entry, "summary", "").strip()[:500]
+            if summary:
+                fallback_used += 1
         if not summary:
+            skipped_no_summary += 1
             continue
 
         articles.append(
@@ -97,6 +107,16 @@ def collect_articles(settings: Settings, source: RssSource) -> list[NewsArticle]
                 content_summary=summary,
             )
         )
+    logger.info(
+        "수집 상세 source=%s feed_entries=%d robots_blocked=%d fetch_success=%d fallback_used=%d skipped_no_summary=%d collected=%d",
+        source.name,
+        feed_entries,
+        robots_blocked,
+        fetch_success,
+        fallback_used,
+        skipped_no_summary,
+        len(articles),
+    )
     return articles
 
 
@@ -109,11 +129,13 @@ def run_once(settings: Settings) -> dict[str, int]:
             inserted = save_articles(settings, articles)
             total_collected += len(articles)
             total_inserted += inserted
+            duplicate_estimated = max(0, len(articles) - inserted)
             logger.info(
-                "크롤링 완료 source=%s collected=%d inserted=%d",
+                "크롤링 완료 source=%s collected=%d inserted=%d duplicate_estimated=%d",
                 source.name,
                 len(articles),
                 inserted,
+                duplicate_estimated,
             )
         except Exception as exc:
             logger.exception("크롤링 실패 source=%s error=%s", source.name, exc)

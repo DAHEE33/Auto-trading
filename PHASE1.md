@@ -95,6 +95,73 @@
 - ⚠️ 본문 전체 저장 금지 (저작권 위반)
 - ⚠️ 에러 발생 시 크롤링 중단되지 않도록 예외 처리
 
+#### 개발 변경 예정
+1. **소스별 수집 상태 가시화 강화**
+   - 소스별 RSS 진입 건수, robots 차단 건수, 본문 수집 성공 건수, DB 저장 건수 로그 추가
+   - 실행 종료 시 소스별 요약 로그를 1줄로 출력하여 운영 점검 시간 단축
+
+2. **robots 차단 대응 정책 명확화**
+   - robots 차단 시 본문 요청은 중단하고, RSS의 제목/요약/링크 중심으로 fallback 저장
+   - 특정 소스 차단률 급증 시 알림(로그 기준 임계치)으로 운영자가 빠르게 인지 가능하도록 개선
+
+3. **소스별 ON/OFF 운영 기능 우선 적용**
+   - 환경변수 기반으로 소스별 활성화/비활성화 제어
+   - 장애/차단 소스는 즉시 OFF, 대체 소스 ON 방식으로 운영 유연성 확보
+
+4. **검증 지표 표준화**
+   - daily 기준 `rss_items`, `robots_blocked`, `inserted` 저장/집계 기준 수립
+   - `robots_block_rate`, `insert_rate`를 기준으로 품질 저하 여부 판단
+
+#### 구현 방식 (예정)
+- `src/rss_sources.py`에서 소스 정의를 유지하되, 소스별 활성화 설정값을 함께 참조하도록 확장
+- `src/crawler.py`의 `collect_articles()`에 소스별 카운터를 추가하고 실행 마지막에 요약 로그 출력
+- robots 차단/본문 수집 실패/요약 fallback 경로를 구분해 로그 레벨과 메시지 형식을 통일
+- 필요 시 별도 집계 테이블(예: `crawl_run_metric`) 또는 일별 리포트 쿼리로 운영 지표를 저장
+- 운영 단계에서는 차단률 임계치(예: 80% 이상) 초과 시 알림 전송을 연결
+
+#### 변경 후 확인 항목 (운영 체크리스트)
+1. **로그 확인 (1회 실행 기준)**
+   - 실행: `python -m src.main --job news --once`
+   - 소스별 `크롤링 완료 source=... collected=... inserted=...` 로그가 모두 출력되는지 확인
+   - `robots.txt 차단으로 스킵`이 특정 소스에 과도하게 몰리는지 확인
+   - 판정 예시:
+     - 연합뉴스만 `inserted > 0`, 나머지 `inserted = 0`이면 소스별 차단/중복/피드 상태 점검 필요
+     - 모든 소스 `inserted = 0`이면 DB 연결/중복 데이터 누적/요약 추출 실패 여부 우선 점검
+
+2. **DB 결과 확인 (소스별 건수)**
+   ```sql
+   SELECT source, COUNT(*) AS cnt
+   FROM news_article
+   WHERE created_at >= NOW() - INTERVAL '1 day'
+   GROUP BY source
+   ORDER BY cnt DESC;
+   ```
+   - 특정 소스가 0건이면 해당 소스 로그에서 robots 차단/본문 실패 메시지 동반 여부 확인
+
+3. **중복 저장 여부 확인**
+   ```sql
+   SELECT url, COUNT(*) AS cnt
+   FROM news_article
+   GROUP BY url
+   HAVING COUNT(*) > 1;
+   ```
+   - 결과가 0건이면 URL 중복 방지는 정상 동작으로 판단
+
+4. **발행시각/최신성 확인**
+   ```sql
+   SELECT source, title, published_at, created_at
+   FROM news_article
+   ORDER BY created_at DESC
+   LIMIT 30;
+   ```
+   - `published_at`이 비정상적으로 비어 있거나 오래된 기사만 반복 저장되는지 확인
+
+5. **운영 판정 기준 (권장)**
+   - `robots_block_rate`가 80% 이상인 소스가 2회 연속 발생하면 경고
+   - `inserted = 0`이 2회 연속 발생한 소스는 임시 OFF 후 대체 소스로 보완
+   - 배치 자체 실패(예외 종료)는 즉시 점검 대상으로 분류
+
+
 ---
 
 ### **STEP 1-2: Python 주가 수집기 구현**
@@ -125,10 +192,13 @@
    - 평일 오전 8시 30분 자동 실행 (장 시작 전)
 
 #### 완료 기준
-- [ ] 주가 데이터가 DB에 정상 저장됨
-- [ ] 등락률 계산이 정확함
-- [ ] 거래량 배율 계산이 정확함
-- [ ] 52주 고점 대비 계산이 정확함
+- [x] 주가 데이터가 DB에 정상 저장됨
+- [x] 등락률 계산이 정확함
+- [x] 거래량 배율 계산이 정확함
+- [x] 52주 고점 대비 계산이 정확함
+
+#### 나중에 추가 작업
+- [ ] 배치 스케줄러 작업 확인
 
 #### 확인 사항
 1. **데이터 정확성 검증**
@@ -156,6 +226,70 @@
 - ⚠️ FinanceDataReader API 제한 확인
 - ⚠️ 주말/공휴일에는 실행 안 되도록 설정
 - ⚠️ 52주 데이터 없는 신규 상장 종목 예외 처리
+
+#### 개발 변경 예정
+1. **지표 명칭 정합화**
+   - `change_rate_1m`를 `change_rate_21d`로 변경하여 계산 로직(21거래일)과 컬럼명을 일치
+   - SQL/모델/저장 쿼리/조회 문서의 용어를 동일하게 맞춰 혼동 제거
+
+2. **예외 상황 처리 가시화 강화**
+   - 휴장일/데이터 부족/종목별 실패를 구분해 로그에 명확히 기록
+   - 배치 결과에 `failed`와 `snapshots`를 함께 남겨 부분 실패 여부를 즉시 판단 가능하도록 개선
+
+3. **스케줄러 운영 점검 항목 고정화**
+   - 평일 08:30 트리거 동작 확인 절차 표준화
+   - 중복 실행 방지(`max_instances=1`)와 동일 날짜 upsert 갱신 검증 절차 문서화
+
+4. **종목 마스터 운영 기준 정리**
+   - `stock.ticker` 입력 규칙(국내/미국 코드 체계)과 `market` 값 표준 정의
+   - 추적 대상 종목(기사 관련 우선)부터 단계적으로 확장하는 운영 방식 명시
+
+#### 구현 방식 (예정)
+- `python-crawler/sql/002_create_stock_price_snapshot.sql`에 컬럼 rename migration을 추가
+- `src/models.py`, `src/db.py`, 조회 SQL 예시를 `change_rate_21d` 기준으로 맞춤
+- `src/stock_crawler.py`는 기존 21거래일 계산(`shift(21)`)을 유지하고 필드명만 정합화
+- 주가 배치 실행 결과 로그에 성공/실패/저장 건수를 유지하여 부분 실패 추적성 확보
+- 스케줄러 점검은 `--once`(기능 검증) + 스케줄 실행(트리거 검증) 2단계로 분리 운영
+
+#### 변경 후 확인 항목 (운영 체크리스트)
+1. **지표 컬럼 확인**
+   ```sql
+   SELECT column_name
+   FROM information_schema.columns
+   WHERE table_name = 'stock_price_snapshot'
+   ORDER BY ordinal_position;
+   ```
+   - `change_rate_21d`가 존재하고 `change_rate_1m`가 제거(또는 사용 중지)되었는지 확인
+
+2. **데이터 적재 및 중복 확인**
+   ```sql
+   SELECT stock_id, base_date, COUNT(*) AS cnt
+   FROM stock_price_snapshot
+   GROUP BY stock_id, base_date
+   HAVING COUNT(*) > 1;
+   ```
+   - 결과 0건이면 upsert가 정상 동작 중으로 판단
+
+3. **실행 결과 로그 확인**
+   - 실행: `python -m src.main --job stock --once`
+   - `주가 수집 완료 stocks=... snapshots=... affected=... failed=...` 로그 확인
+   - `failed > 0`이어도 전체 배치가 종료되지 않고 완료 로그가 출력되면 부분 실패 처리는 정상
+
+4. **휴장일/데이터 부족 검증**
+   ```sql
+   SELECT s.ticker, p.base_date, p.close_price, p.drawdown_52w
+   FROM stock_price_snapshot p
+   JOIN stock s ON s.id = p.stock_id
+   ORDER BY p.base_date DESC, s.ticker
+   LIMIT 30;
+   ```
+   - 휴장일 실행 시 최신 거래일 기준으로 저장되는지 확인
+   - 신규상장/데이터 부족 종목에서 `drawdown_52w`가 NULL로 저장되는지 확인
+
+5. **스케줄러 동작 점검**
+   - 환경값: `STOCK_SCHEDULE_HOUR=8`, `STOCK_SCHEDULE_MINUTE=30`
+   - 스케줄 실행: `python -m src.main --job stock`
+   - 평일(mon-fri) 08:30 트리거와 중복 실행 방지(`max_instances=1`) 로그 확인
 
 ---
 
